@@ -1,13 +1,11 @@
 package influxdb
 
 import (
-	"fmt"
 	"log"
-	uurl "net/url"
 	"strings"
 	"time"
 
-	"github.com/influxdata/influxdb/client"
+	"github.com/influxdata/influxdb/client/v2"
 	"github.com/rcrowley/go-metrics"
 )
 
@@ -15,14 +13,14 @@ type reporter struct {
 	reg      metrics.Registry
 	interval time.Duration
 
-	url      uurl.URL
+	url      string
 	database string
 	username string
 	password string
 	tags     map[string]string
 	prefix   string
 
-	client *client.Client
+	client client.Client
 }
 
 // InfluxDB starts a InfluxDB reporter which will post the metrics from the given registry at each d interval.
@@ -32,11 +30,6 @@ func InfluxDB(r metrics.Registry, d time.Duration, url, database, username, pass
 
 // InfluxDBWithTags starts a InfluxDB reporter which will post the metrics from the given registry at each d interval with the specified tags
 func InfluxDBWithTags(r metrics.Registry, d time.Duration, url, database, username, password, prefix string, tags map[string]string) {
-	u, err := uurl.Parse(url)
-	if err != nil {
-		log.Printf("unable to parse InfluxDB url %s. err=%v", url, err)
-		return
-	}
 
 	if prefix != "" && !strings.HasSuffix(prefix, "_") {
 		prefix = prefix + "_"
@@ -45,7 +38,7 @@ func InfluxDBWithTags(r metrics.Registry, d time.Duration, url, database, userna
 	rep := &reporter{
 		reg:      r,
 		interval: d,
-		url:      *u,
+		url:      url,
 		database: database,
 		username: username,
 		password: password,
@@ -61,8 +54,8 @@ func InfluxDBWithTags(r metrics.Registry, d time.Duration, url, database, userna
 }
 
 func (r *reporter) makeClient() (err error) {
-	r.client, err = client.NewClient(client.Config{
-		URL:      r.url,
+	r.client, err = client.NewHTTPClient(client.HTTPConfig{
+		Addr:     r.url,
 		Username: r.username,
 		Password: r.password,
 	})
@@ -81,7 +74,7 @@ func (r *reporter) run() {
 				log.Printf("unable to send metrics to InfluxDB. err=%v", err)
 			}
 		case <-pingTicker:
-			_, _, err := r.client.Ping()
+			_, _, err := r.client.Ping(time.Second * 5)
 			if err != nil {
 				log.Printf("got error while sending a ping to InfluxDB, trying to recreate client. err=%v", err)
 
@@ -108,6 +101,7 @@ func measurementName(pointName string) (measurementName string, extra string) {
 		measurementName = strings.Join(parts[:lenOffset], "_")
 		extra = strings.Replace(parts[lenOffset], ".", "_", 1)
 	}
+	return
 }
 
 func fieldName(prefix, name string) string {
@@ -120,7 +114,7 @@ func fieldName(prefix, name string) string {
 
 func (r *reporter) send() error {
 
-	measurementPoints := map[string]*client.Point
+	measurementFields := make(map[string]map[string]interface{})
 	// var pts []client.Point
 	now := time.Now()
 	r.reg.Each(func(name string, i interface{}) {
@@ -128,86 +122,86 @@ func (r *reporter) send() error {
 		measurement, fieldPrefix := measurementName(name)
 		measurement = r.prefix + measurement
 
-		point, ok := measurementPoints[measurement]
-		if !ok {
-			point = &client.Point{
-				Measurement: measurement,
-				Tags:        r.tags,
-				Time:        now,
-				Fields:      make(map[string]interface{}),
-			}
-			measurementPoints[measurement] = point
+		if _, ok := measurementFields[measurement]; !ok {
+			measurementFields[measurement] = make(map[string]interface{})
 		}
+		fields := measurementFields[measurement]
 
 		switch metric := i.(type) {
 		case metrics.Counter:
 			ms := metric.Snapshot()
-			point.Fields[fieldPrefix + "_count"] = ms.Count()
+			fields[fieldPrefix+"_count"] = ms.Count()
 		case metrics.Gauge:
 			ms := metric.Snapshot()
-			point.Fields[fieldName(fieldPrefix, "gauge")] = ms.Value()
+			fields[fieldName(fieldPrefix, "gauge")] = ms.Value()
 		case metrics.GaugeFloat64:
 			ms := metric.Snapshot()
-			point.Fields[fieldName(fieldPrefix, "gauge")] = ms.Value()
+			fields[fieldName(fieldPrefix, "gauge")] = ms.Value()
 		case metrics.Histogram:
 			ms := metric.Snapshot()
 			ps := ms.Percentiles([]float64{0.5, 0.75, 0.95, 0.99, 0.999, 0.9999})
 			fieldPrefix = fieldName(fieldPrefix, "histogram")
-			point.Fields[fieldName(fieldPrefix, "count")] =    ms.Count()
-			point.Fields[fieldName(fieldPrefix, "max")] =      ms.Max()
-			point.Fields[fieldName(fieldPrefix, "mean")] =     ms.Mean()
-			point.Fields[fieldName(fieldPrefix, "min")] =      ms.Min()
-			point.Fields[fieldName(fieldPrefix, "stddev")] =   ms.StdDev()
-			point.Fields[fieldName(fieldPrefix, "variance")] = ms.Variance()
-			point.Fields[fieldName(fieldPrefix, "p50")] =      ps[0]
-			point.Fields[fieldName(fieldPrefix, "p75")] =      ps[1]
-			point.Fields[fieldName(fieldPrefix, "p95")] =      ps[2]
-			point.Fields[fieldName(fieldPrefix, "p99")] =      ps[3]
-			point.Fields[fieldName(fieldPrefix, "p999")] =     ps[4]
-			point.Fields[fieldName(fieldPrefix, "p9999")] =    ps[5]
+			fields[fieldName(fieldPrefix, "count")] = ms.Count()
+			fields[fieldName(fieldPrefix, "max")] = ms.Max()
+			fields[fieldName(fieldPrefix, "mean")] = ms.Mean()
+			fields[fieldName(fieldPrefix, "min")] = ms.Min()
+			fields[fieldName(fieldPrefix, "stddev")] = ms.StdDev()
+			fields[fieldName(fieldPrefix, "variance")] = ms.Variance()
+			fields[fieldName(fieldPrefix, "p50")] = ps[0]
+			fields[fieldName(fieldPrefix, "p75")] = ps[1]
+			fields[fieldName(fieldPrefix, "p95")] = ps[2]
+			fields[fieldName(fieldPrefix, "p99")] = ps[3]
+			fields[fieldName(fieldPrefix, "p999")] = ps[4]
+			fields[fieldName(fieldPrefix, "p9999")] = ps[5]
 		case metrics.Meter:
 			ms := metric.Snapshot()
 			fieldPrefix = fieldName(fieldPrefix, "meter")
-			point.Fields[fieldName(fieldPrefix, "count")] = ms.Count()
-			point.Fields[fieldName(fieldPrefix, "m1")] =    ms.Rate1()
-			point.Fields[fieldName(fieldPrefix, "m5")] =    ms.Rate5()
-			point.Fields[fieldName(fieldPrefix, "m15")] =   ms.Rate15()
-			point.Fields[fieldName(fieldPrefix, "mean")] =  ms.RateMean()
+			fields[fieldName(fieldPrefix, "count")] = ms.Count()
+			fields[fieldName(fieldPrefix, "m1")] = ms.Rate1()
+			fields[fieldName(fieldPrefix, "m5")] = ms.Rate5()
+			fields[fieldName(fieldPrefix, "m15")] = ms.Rate15()
+			fields[fieldName(fieldPrefix, "mean")] = ms.RateMean()
 		case metrics.Timer:
 			ms := metric.Snapshot()
 			ps := ms.Percentiles([]float64{0.5, 0.75, 0.95, 0.99, 0.999, 0.9999})
 			fieldPrefix = fieldName(fieldPrefix, "timer")
-			point.Fields[fieldName(fieldPrefix, "count")] =    ms.Count()
-			point.Fields[fieldName(fieldPrefix, "max")] =      ms.Max()
-			point.Fields[fieldName(fieldPrefix, "mean")] =     ms.Mean()
-			point.Fields[fieldName(fieldPrefix, "min")] =      ms.Min()
-			point.Fields[fieldName(fieldPrefix, "stddev")] =   ms.StdDev()
-			point.Fields[fieldName(fieldPrefix, "variance")] = ms.Variance()
-			point.Fields[fieldName(fieldPrefix, "p50")] =      ps[0]
-			point.Fields[fieldName(fieldPrefix, "p75")] =      ps[1]
-			point.Fields[fieldName(fieldPrefix, "p95")] =      ps[2]
-			point.Fields[fieldName(fieldPrefix, "p99")] =      ps[3]
-			point.Fields[fieldName(fieldPrefix, "p999")] =     ps[4]
-			point.Fields[fieldName(fieldPrefix, "p9999")] =    ps[5]
-			point.Fields[fieldName(fieldPrefix, "m1")] =       ms.Rate1()
-			point.Fields[fieldName(fieldPrefix, "m5")] =       ms.Rate5()
-			point.Fields[fieldName(fieldPrefix, "m15")] =      ms.Rate15()
-			point.Fields[fieldName(fieldPrefix, "meanrate")] = ms.RateMean()
+			fields[fieldName(fieldPrefix, "count")] = ms.Count()
+			fields[fieldName(fieldPrefix, "max")] = ms.Max()
+			fields[fieldName(fieldPrefix, "mean")] = ms.Mean()
+			fields[fieldName(fieldPrefix, "min")] = ms.Min()
+			fields[fieldName(fieldPrefix, "stddev")] = ms.StdDev()
+			fields[fieldName(fieldPrefix, "variance")] = ms.Variance()
+			fields[fieldName(fieldPrefix, "p50")] = ps[0]
+			fields[fieldName(fieldPrefix, "p75")] = ps[1]
+			fields[fieldName(fieldPrefix, "p95")] = ps[2]
+			fields[fieldName(fieldPrefix, "p99")] = ps[3]
+			fields[fieldName(fieldPrefix, "p999")] = ps[4]
+			fields[fieldName(fieldPrefix, "p9999")] = ps[5]
+			fields[fieldName(fieldPrefix, "m1")] = ms.Rate1()
+			fields[fieldName(fieldPrefix, "m5")] = ms.Rate5()
+			fields[fieldName(fieldPrefix, "m15")] = ms.Rate15()
+			fields[fieldName(fieldPrefix, "meanrate")] = ms.RateMean()
 		}
 	})
 
-	pts := make([]client.Point, len(measurementPoints))
-	i := 0
-	for _, point := range measurementPoints {
-		pts[i] = &point
-		i++
+	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
+		Database:  r.database,
+		Precision: "s",
+	})
+	if err != nil {
+		return err
 	}
 
-	bps := client.BatchPoints{
-		Points:   pts,
-		Database: r.database,
+	for measurement, fields := range measurementFields {
+		if pnt, err := client.NewPoint(measurement, r.tags, fields, now); err != nil {
+			return err
+		} else {
+			bp.AddPoint(pnt)
+		}
 	}
 
-	_, err := r.client.Write(bps)
-	return err
+	if err := r.client.Write(bp); err != nil {
+		return err
+	}
+	return nil
 }
