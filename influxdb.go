@@ -96,10 +96,9 @@ func measurementName(pointName string) (measurementName string, extra string) {
 		measurementName = parts[0]
 		extra = parts[1]
 	} else {
-		parts := strings.SplitN(pointName, ".", dotCount)
-		lenOffset := dotCount - 1
-		measurementName = strings.Join(parts[:lenOffset], "_")
-		extra = strings.Replace(parts[lenOffset], ".", "_", 1)
+		parts := strings.SplitN(pointName, ".", dotCount+1)
+		measurementName = strings.Join(parts[:dotCount], "_")
+		extra = strings.Replace(parts[dotCount], ".", "_", 1)
 	}
 	return
 }
@@ -113,9 +112,7 @@ func fieldName(prefix, name string) string {
 }
 
 func (r *reporter) send() error {
-
 	measurementFields := make(map[string]map[string]interface{})
-	// var pts []client.Point
 	now := time.Now()
 	r.reg.Each(func(name string, i interface{}) {
 
@@ -130,7 +127,7 @@ func (r *reporter) send() error {
 		switch metric := i.(type) {
 		case metrics.Counter:
 			ms := metric.Snapshot()
-			fields[fieldPrefix+"_count"] = ms.Count()
+			fields[fieldName(fieldPrefix, "count")] = ms.Count()
 		case metrics.Gauge:
 			ms := metric.Snapshot()
 			fields[fieldName(fieldPrefix, "gauge")] = ms.Value()
