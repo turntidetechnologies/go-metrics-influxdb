@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	client "github.com/influxdata/influxdb1-client"
+	client "github.com/influxdata/influxdb1-client/v2"
 	"github.com/rcrowley/go-metrics"
 )
 
