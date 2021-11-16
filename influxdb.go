@@ -2,12 +2,17 @@ package influxdb
 
 import (
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
 	client "github.com/influxdata/influxdb1-client/v2"
 	"github.com/rcrowley/go-metrics"
 )
+
+// Expect the tags in the pattern
+// namespace.metricName[tag1:value1,tag2:value2,etc....]
+var tagPattern = regexp.MustCompile("([\\w\\.]+)\\[([\\w\\W]+)\\]")
 
 type reporter struct {
 	reg      metrics.Registry
@@ -113,11 +118,14 @@ func fieldName(prefix, name string) string {
 
 func (r *reporter) send() error {
 	measurementFields := make(map[string]map[string]interface{})
+	measurementTags := make(map[string]map[string]string)
 	now := time.Now()
 	r.reg.Each(func(name string, i interface{}) {
 
+		name, tags := splitNameAndTags(name)
 		measurement, fieldPrefix := measurementName(name)
 		measurement = r.prefix + measurement
+		measurementTags[measurement] = tags
 
 		if _, ok := measurementFields[measurement]; !ok {
 			measurementFields[measurement] = make(map[string]interface{})
@@ -190,7 +198,14 @@ func (r *reporter) send() error {
 	}
 
 	for measurement, fields := range measurementFields {
-		if pnt, err := client.NewPoint(measurement, r.tags, fields, now); err != nil {
+		tags := make(map[string]string, len(measurementTags[measurement]) + len(r.tags))
+		for tag, value := range r.tags {
+			tags[tag] = value
+		}
+		for tag, value := range measurementTags[measurement] {
+			tags[tag] = value
+		}
+		if pnt, err := client.NewPoint(measurement, tags, fields, now); err != nil {
 			return err
 		} else {
 			bp.AddPoint(pnt)
@@ -201,4 +216,20 @@ func (r *reporter) send() error {
 		return err
 	}
 	return nil
+}
+
+func splitNameAndTags(metric string) (string, map[string]string) {
+	if res := tagPattern.FindStringSubmatch(metric); len(res) == 3 {
+		tagStrings := strings.Split(res[2], ",")
+		tags := make(map[string]string, len(tagStrings))
+		for _, tagString := range tagStrings {
+			tagKeyValue := strings.SplitN(tagString, ":", 2)
+			if len(tagKeyValue) < 2 {
+				continue
+			}
+			tags[tagKeyValue[0]] = tagKeyValue[1]
+		}
+		return res[1], tags
+	}
+	return metric, nil
 }
