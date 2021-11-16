@@ -29,6 +29,9 @@ type reporter struct {
 }
 
 // InfluxDB starts a InfluxDB reporter which will post the metrics from the given registry at each d interval.
+//
+// If metric names are suffixed with tags in the format [tag1:value1,tag2:value2]
+// they are extracted and written as InfluxDB tags.
 func InfluxDB(r metrics.Registry, d time.Duration, url, database, username, password, prefix string) {
 	InfluxDBWithTags(r, d, url, database, username, password, prefix, nil)
 }
